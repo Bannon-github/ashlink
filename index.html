@@ -4,9 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Ashlink</title>
-  <meta name="description" content="A private link for a four-digit code. It is drawn as an image, disappears after a timer, then the page moves on. No sign-in.">
+  <meta name="description" content="A private link for a message. It is written on paper, then the page moves on. No sign-in.">
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,560;9..144,640&family=Outfit:wght@400;500;600&display=swap">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Caveat:wght@600&family=Fraunces:opsz,wght@9..144,560;9..144,640&family=Outfit:wght@400;500;600&display=swap">
   <style>
     :root {
       --bg: #141311;
@@ -76,6 +76,11 @@
       background: var(--bg); color: var(--fg); font-size: 0.875rem; font-weight: 500;
     }
     .times button[aria-pressed="true"] { background: var(--brass); color: var(--brass-ink); border-color: transparent; }
+    .glyphs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.5rem; margin-top: 0.75rem; }
+    .glyphs button { position: relative; height: 4rem; border-radius: 0.75rem; border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
+    .glyphs button[aria-pressed="true"] { background: var(--brass); color: var(--brass-ink); border-color: transparent; }
+    .glyphs span { position: absolute; top: 0.25rem; right: 0.4rem; font-size: 0.75rem; font-weight: 600; }
+    .glyphs svg { width: 1.75rem; height: 1.75rem; }
     .primary, .copy {
       width: 100%; margin-top: 1.25rem; height: 3rem; border: 0; border-radius: 0.75rem;
       background: var(--ember); color: var(--paper); font-size: 1rem; font-weight: 500;
@@ -101,6 +106,27 @@
     }
     canvas.gone { opacity: 0; }
     .burnt { width: min(100%, 28rem); height: auto; border-radius: 1rem; display: block; }
+    .stage {
+      position: relative;
+      width: 100%;
+      max-height: 7.5rem;
+      overflow: hidden;
+      transition: max-height 1.05s cubic-bezier(.16,1,.3,1);
+    }
+    .stage.open { max-height: 40rem; }
+    .sheet {
+      transform-origin: center center;
+      transform: perspective(1100px) rotateX(58deg);
+      filter: brightness(0.78);
+      transition: transform 1.05s cubic-bezier(.16,1,.3,1), filter 1.05s ease;
+    }
+    .sheet.open { transform: perspective(1100px) rotateX(0); filter: none; }
+    .reveal {
+      position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+      z-index: 2; height: 3rem; padding: 0 1.25rem; border: 0; border-radius: 0.75rem;
+      background: var(--ember); color: var(--paper); font-size: 1rem; font-weight: 500;
+    }
+    canvas.paper { width: 100%; height: auto; display: block; }
     .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
     .text-btn {
       margin-top: 1.5rem; height: 2.75rem; padding: 0; border: 0; background: none;
@@ -131,7 +157,7 @@
           <h1>Ashlink</h1>
         </div>
       </div>
-      <p class="lede" id="lede">A private link for a four-digit code. It is drawn as an image, disappears after a timer, then the page moves on. Anyone with the link can open it — no sign-in.</p>
+      <p class="lede" id="lede">A private link for a message. It is written on paper, then the page moves on. Anyone with the link can open it — no sign-in.</p>
     </header>
     <div id="app"></div>
   </main>
@@ -171,14 +197,78 @@
       }
       return keyPromise;
     }
+    function messageFrom(parsed) {
+      if (typeof parsed.m === "string") {
+        const text = parsed.m.trim();
+        return text.length > 0 && text.length <= 280 ? text : null;
+      }
+      return isPin(parsed.p) ? parsed.p : null;
+    }
     function readSlip(parsed) {
-      if (!isPin(parsed.p) || typeof parsed.t !== "number" || !isHttp(parsed.r)) return "bad";
+      if (typeof parsed.t !== "number" || !isHttp(parsed.r)) return "bad";
       if (typeof parsed.e === "number" && Date.now() > parsed.e) return "expired";
       const seconds = Math.min(600, Math.max(5, Math.round(parsed.t)));
-      return { pin: parsed.p, seconds, redirect: parsed.r, expiresAt: parsed.e };
+      const base = { seconds, redirect: parsed.r, expiresAt: parsed.e };
+      if (parsed.k === "text" || parsed.k === "pin" || parsed.k === "image") {
+        if (typeof parsed.s !== "string" || typeof parsed.c !== "string") return "bad";
+        return { lock: parsed.k, salt: parsed.s, cipher: parsed.c, ...base };
+      }
+      const message = messageFrom(parsed);
+      if (!message) return "bad";
+      return { message, ...base };
+    }
+    async function passwordKey(secret, salt) {
+      const base = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), "PBKDF2", false, ["deriveKey"]);
+      return crypto.subtle.deriveKey(
+        { name: "PBKDF2", salt, iterations: 100000, hash: "SHA-256" },
+        base,
+        { name: "AES-GCM", length: 256 },
+        false,
+        ["encrypt", "decrypt"],
+      );
+    }
+    async function sealMessage(message, secret) {
+      const salt = crypto.getRandomValues(new Uint8Array(16));
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const key = await passwordKey(secret, salt);
+      const cipher = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(message)));
+      const packed = new Uint8Array(iv.length + cipher.length);
+      packed.set(iv, 0);
+      packed.set(cipher, iv.length);
+      return { salt: bytesToB64url(salt), cipher: bytesToB64url(packed) };
+    }
+    async function unlockMessage(locked, secret) {
+      try {
+        const packed = b64urlToBytes(locked.cipher);
+        if (packed.length < 13) return null;
+        const key = await passwordKey(secret, b64urlToBytes(locked.salt));
+        const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: packed.slice(0, 12) }, key, packed.slice(12));
+        const message = new TextDecoder().decode(plain).trim();
+        return message ? message : null;
+      } catch { return null; }
+    }
+    function failures(salt) {
+      const value = Number(localStorage.getItem("ashlink-fail:" + salt));
+      return Number.isFinite(value) ? value : 0;
+    }
+    function noteFailure(salt) {
+      const next = failures(salt) + 1;
+      localStorage.setItem("ashlink-fail:" + salt, String(next));
+      if (next >= 2) localStorage.setItem("ashlink-burn:" + salt, "1");
+      return next;
+    }
+    function burned(salt) {
+      return localStorage.getItem("ashlink-burn:" + salt) === "1" || failures(salt) >= 2;
     }
     async function encodeSlip(slip) {
-      const json = JSON.stringify({ p: slip.pin, t: slip.seconds, r: slip.redirect, e: slip.expiresAt });
+      const body = { t: slip.seconds, r: slip.redirect, e: slip.expiresAt };
+      if (slip.lock) {
+        const sealed = await sealMessage(slip.message, slip.lock.secret);
+        body.k = slip.lock.kind;
+        body.s = sealed.salt;
+        body.c = sealed.cipher;
+      } else body.m = slip.message;
+      const json = JSON.stringify(body);
       const iv = crypto.getRandomValues(new Uint8Array(12));
       const cipher = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, await aesKey(), new TextEncoder().encode(json)));
       const packed = new Uint8Array(iv.length + cipher.length);
@@ -189,6 +279,7 @@
     async function decodeSlip(hash) {
       const raw = hash.startsWith("#") ? hash.slice(1) : hash;
       if (raw === "gone") return "gone";
+      if (raw === "burnt") return "burnt";
       try {
         if (raw.startsWith("e.")) {
           const packed = b64urlToBytes(raw.slice(2));
@@ -208,43 +299,92 @@
     const lede = document.getElementById("lede");
     const app = document.getElementById("app");
 
-    function drawPin(canvas, pin) {
-      const ctx = canvas.getContext("2d");
-      const w = canvas.width, h = canvas.height;
-      ctx.clearRect(0, 0, w, h);
-      ctx.fillStyle = "#f6f0e4";
-      ctx.fillRect(0, 0, w, h);
-      ctx.strokeStyle = "#1a1612";
-      ctx.lineWidth = 8;
-      ctx.strokeRect(16, 16, w - 32, h - 32);
-      ctx.fillStyle = "#e25b32";
-      ctx.fillRect(16, 16, w - 32, 10);
-      ctx.fillStyle = "#1a1612";
-      ctx.font = "600 132px ui-monospace, SFMono-Regular, Menlo, monospace";
+    let paperImage = null;
+    function loadPaper() {
+      paperImage ??= new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = () => reject(new Error("paper"));
+        img.src = "paper.jpg";
+      });
+      return paperImage;
+    }
+    function wrapLines(ctx, text, maxWidth) {
+      const lines = [];
+      for (const para of text.split("\n")) {
+        const words = para.split(/\s+/).filter(Boolean);
+        if (!words.length) { lines.push(""); continue; }
+        let line = "";
+        for (const word of words) {
+          const test = line ? line + " " + word : word;
+          if (ctx.measureText(test).width > maxWidth && line) { lines.push(line); line = word; }
+          else line = test;
+        }
+        if (line) lines.push(line);
+      }
+      return lines.slice(0, 12);
+    }
+    function writeOnPaper(ctx, canvas, message) {
+      const maxWidth = canvas.width * 0.42;
+      let size = message.length < 8 ? 92 : message.length < 40 ? 64 : 46;
+      const linesFor = (fontSize) => {
+        ctx.font = "600 " + fontSize + "px Caveat, cursive";
+        return wrapLines(ctx, message, maxWidth);
+      };
+      let lines = linesFor(size);
+      while (lines.length * size * 1.25 > canvas.height * 0.46 && size > 28) {
+        size -= 4;
+        lines = linesFor(size);
+      }
+      ctx.save();
+      ctx.translate(canvas.width * 0.51, canvas.height * 0.48);
+      ctx.rotate(0.045);
+      ctx.fillStyle = "#241911";
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
-      ctx.fillText(pin.split("").join(" "), w / 2, h / 2 + 8);
-      ctx.font = "500 22px Outfit, sans-serif";
-      ctx.fillStyle = "#6d6458";
-      ctx.fillText("LOOK ONCE", w / 2, 58);
+      const lineHeight = size * 1.2;
+      const top = -((lines.length - 1) * lineHeight) / 2;
+      lines.forEach((line, index) => ctx.fillText(line, 0, top + index * lineHeight));
+      ctx.restore();
+    }
+    async function drawPaper(canvas, withText, message) {
+      const ctx = canvas.getContext("2d");
+      try {
+        const img = await loadPaper();
+        await document.fonts.load('600 64px "Caveat"');
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      } catch {
+        ctx.fillStyle = "#f4efe4";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      }
+      if (withText) writeOnPaper(ctx, canvas, message);
     }
 
     function show(mode, slip) {
       lede.hidden = mode !== "compose";
       if (mode === "compose") renderCompose();
+      else if (mode === "lock") renderLock(slip);
       else if (mode === "view") renderView(slip);
-      else if (mode === "gone") renderMessage("That code is gone", "The image has already left this page. Nothing here can bring it back.", "Make another link");
+      else if (mode === "gone") renderMessage("That message is gone", "The paper has already left this page. Nothing here can bring it back.", "Make another link");
       else if (mode === "expired") renderBurnt();
-      else renderMessage("This link is incomplete", "It does not contain a usable code. Ask for a new one — there is nothing to sign in to.", "Start over");
+      else renderMessage("This link is incomplete", "It does not contain a usable message. Ask for a new one — there is nothing to sign in to.", "Start over");
     }
 
     function renderCompose() {
       app.innerHTML = `
         <section class="card">
-          <p class="label">Four-digit code</p>
-          <div class="digits">
-            ${[0,1,2,3].map((i) => `<input inputmode="numeric" autocomplete="off" maxlength="4" aria-label="Digit ${i + 1}" data-i="${i}">`).join("")}
+          <label for="message">Message</label>
+          <textarea id="message" rows="4" maxlength="280" placeholder="A code, a note, a sentence" style="width:100%;resize:none;border-radius:0.75rem;border:1px solid var(--line);background:var(--bg);color:var(--fg);font:inherit;padding:0.75rem;"></textarea>
+          <p class="label" style="margin-top:1.25rem">Lock</p>
+          <div class="times">
+            <button type="button" data-lock="none" aria-pressed="true">None</button>
+            <button type="button" data-lock="text" aria-pressed="false">Text</button>
+            <button type="button" data-lock="pin" aria-pressed="false">PIN</button>
+            <button type="button" data-lock="image" aria-pressed="false">Image</button>
           </div>
+          <p class="note">Two wrong answers burn the message.</p>
+          <div id="lockbox"></div>
           <p class="label" style="margin-top:1.25rem">Show it for</p>
           <div class="times">
             ${DURATIONS.map((n) => `<button type="button" data-sec="${n}" aria-pressed="${n === 30}">${n < 60 ? n + "s" : n / 60 + "m"}</button>`).join("")}
@@ -253,7 +393,6 @@
           <div class="times">
             ${LIFETIMES.map((option) => `<button type="button" data-life="${option.ms}" aria-pressed="${option.ms === 900000}">${option.label}</button>`).join("")}
           </div>
-          <p class="note">That deadline is stamped into the link.</p>
           <label for="redirect" style="margin-top:1.25rem">Then open</label>
           <input class="url" id="redirect" type="url" inputmode="url" placeholder="Leave blank for an expired screen">
           <p class="error" id="error" hidden></p>
@@ -266,31 +405,79 @@
             <button class="copy" id="copy" type="button">Copy link</button>
             <a class="btn" id="open" href="#">Open it</a>
           </div>
-          <p class="note">The code is encrypted in the link, so the address does not show the digits. After the stamped time, this page shows a burnt scrap and will not draw the code.</p>
         </section>`;
-      const inputs = [...app.querySelectorAll(".digits input")];
-      const digits = ["", "", "", ""];
+      const messageBox = document.getElementById("message");
       let seconds = 30;
       let lifeMs = 15 * 60 * 1000;
-      inputs.forEach((input, index) => {
-        input.addEventListener("input", () => {
-          const cleaned = input.value.replace(/\D/g, "");
-          if (cleaned.length > 1) {
-            cleaned.slice(0, 4).split("").forEach((char, offset) => {
-              if (index + offset < 4) digits[index + offset] = char;
-            });
-          } else {
-            digits[index] = cleaned.slice(-1);
-          }
-          inputs.forEach((node, i) => { node.value = digits[i]; });
-          const focusAt = Math.min(3, index + Math.max(cleaned.length, 1) - (cleaned ? 0 : 1));
-          if (cleaned) inputs[Math.min(3, index + cleaned.length)]?.focus();
-          document.getElementById("share").hidden = true;
+      let lockKind = "none";
+      let picked = [];
+      const GLYPHS = ["sun","moon","key","leaf","star","drop","bolt","heart","peak"];
+      function glyph(id) {
+        const paths = {
+          sun: '<circle cx="12" cy="12" r="3.5"/><path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.6 5.6l1.6 1.6M16.8 16.8l1.6 1.6M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6"/>',
+          moon: '<path d="M16 3.5A8 8 0 1 0 20.5 14 6.2 6.2 0 0 1 16 3.5z"/>',
+          key: '<circle cx="8" cy="14" r="3.2"/><path d="M11 14h9l-2 2.2M17 14v2.2"/>',
+          leaf: '<path d="M5 19C5 10 10 4 20 4 19 14 14 19 5 19zM5 19c4-4 7-7 10-10"/>',
+          star: '<path d="m12 3.5 2.2 4.6 5 .7-3.6 3.5.9 5.1L12 15.2 7.5 17.4l.9-5.1L4.8 8.8l5-.7L12 3.5z"/>',
+          drop: '<path d="M12 3s6 6.2 6 10.2A6 6 0 0 1 6 13.2C6 9.2 12 3 12 3z"/>',
+          bolt: '<path d="M13 2 5 13h6l-1 9 8-12h-6l1-8z"/>',
+          heart: '<path d="M12 19s-7-4.4-7-9a4 4 0 0 1 7-2 4 4 0 0 1 7 2c0 4.6-7 9-7 9z"/>',
+          peak: '<path d="m3 18 6.2-8 3.3 4.2L16 9l5 9H3z"/>',
+        };
+        return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${paths[id]}</svg>`;
+      }
+      function paintLock() {
+        const box = document.getElementById("lockbox");
+        if (lockKind === "none") { box.innerHTML = ""; return; }
+        if (lockKind === "text") {
+          box.innerHTML = '<input class="url" id="pass" type="password" autocomplete="new-password" placeholder="Password" style="margin-top:0.75rem">';
+          return;
+        }
+        if (lockKind === "pin") {
+          box.innerHTML = '<div class="digits" style="margin-top:0.75rem">' + [0,1,2,3].map((i) => `<input inputmode="numeric" maxlength="4" aria-label="PIN digit ${i + 1}" data-pin="${i}">`).join("") + "</div>";
+          wirePin(box);
+          return;
+        }
+        box.innerHTML = '<div class="glyphs">' + GLYPHS.map((id) => {
+          const order = picked.indexOf(id);
+          return `<button type="button" data-glyph="${id}" aria-label="${id}" aria-pressed="${order >= 0}">${glyph(id)}${order >= 0 ? `<span>${order + 1}</span>` : ""}</button>`;
+        }).join("") + "</div>";
+        box.querySelectorAll("[data-glyph]").forEach((button) => {
+          button.addEventListener("click", () => {
+            const id = button.dataset.glyph;
+            const at = picked.indexOf(id);
+            if (at >= 0) picked = picked.filter((item) => item !== id);
+            else if (picked.length < 3) picked = picked.concat(id);
+            document.getElementById("share").hidden = true;
+            paintLock();
+          });
         });
-        input.addEventListener("keydown", (event) => {
-          if (event.key === "Backspace" && !digits[index] && index > 0) inputs[index - 1].focus();
+      }
+      function wirePin(box) {
+        const inputs = [...box.querySelectorAll("[data-pin]")];
+        const digits = ["", "", "", ""];
+        inputs.forEach((input, index) => {
+          input.addEventListener("input", () => {
+            const cleaned = input.value.replace(/\D/g, "");
+            if (cleaned.length > 1) cleaned.slice(0, 4).split("").forEach((char, offset) => { if (index + offset < 4) digits[index + offset] = char; });
+            else digits[index] = cleaned.slice(-1);
+            inputs.forEach((node, i) => { node.value = digits[i]; });
+            if (cleaned) inputs[Math.min(3, index + cleaned.length)]?.focus();
+            document.getElementById("share").hidden = true;
+          });
+        });
+      }
+      paintLock();
+      app.querySelectorAll("[data-lock]").forEach((button) => {
+        button.addEventListener("click", () => {
+          lockKind = button.dataset.lock;
+          picked = [];
+          app.querySelectorAll("[data-lock]").forEach((node) => node.setAttribute("aria-pressed", String(node === button)));
+          document.getElementById("share").hidden = true;
+          paintLock();
         });
       });
+      messageBox.addEventListener("input", () => { document.getElementById("share").hidden = true; });
       app.querySelectorAll("[data-sec]").forEach((button) => {
         button.addEventListener("click", () => {
           seconds = Number(button.dataset.sec);
@@ -306,12 +493,32 @@
         });
       });
       document.getElementById("create").addEventListener("click", async () => {
-        const pin = digits.join("");
+        const text = messageBox.value.trim();
         const error = document.getElementById("error");
-        if (!isPin(pin)) {
+        if (!text) {
           error.hidden = false;
-          error.textContent = "Enter all four digits.";
+          error.textContent = "Write a message.";
           return;
+        }
+        if (text.length > 280) {
+          error.hidden = false;
+          error.textContent = "Keep it to 280 characters.";
+          return;
+        }
+        let lock;
+        if (lockKind === "text") {
+          const secret = (document.getElementById("pass").value || "").trim();
+          if (!secret) { error.hidden = false; error.textContent = "Choose a password."; return; }
+          lock = { kind: "text", secret };
+        }
+        if (lockKind === "pin") {
+          const secret = [...app.querySelectorAll("[data-pin]")].map((node) => node.value).join("");
+          if (!isPin(secret)) { error.hidden = false; error.textContent = "Enter a four-digit PIN."; return; }
+          lock = { kind: "pin", secret };
+        }
+        if (lockKind === "image") {
+          if (!picked.length) { error.hidden = false; error.textContent = "Choose one to three images."; return; }
+          lock = { kind: "image", secret: picked.join(".") };
         }
         const typed = document.getElementById("redirect").value.trim();
         const fallback = location.origin + location.pathname + location.search + "#gone";
@@ -322,7 +529,7 @@
           return;
         }
         error.hidden = true;
-        const url = location.origin + location.pathname + location.search + "#" + await encodeSlip({ pin, seconds, redirect: target, expiresAt: Date.now() + lifeMs });
+        const url = location.origin + location.pathname + location.search + "#" + await encodeSlip({ message: text, seconds, redirect: target, expiresAt: Date.now() + lifeMs, lock });
         const share = document.getElementById("share");
         share.hidden = false;
         document.getElementById("link").textContent = url;
@@ -340,28 +547,141 @@
     function renderView(slip) {
       app.innerHTML = `
         <div class="viewer">
-          <p id="status">This image disappears in ${slip.seconds}s</p>
-          <canvas id="pin" width="640" height="280" role="img" aria-label="Temporary code"></canvas>
-          <p>Drawn as an image, so the digits are not selectable text.</p>
+          <p id="status" hidden></p>
+          <div class="stage" id="stage">
+            <div class="sheet" id="sheet">
+              <canvas class="paper" id="pin" width="1200" height="800" role="img" aria-label="Folded paper"></canvas>
+            </div>
+            <button class="reveal" id="reveal" type="button">Reveal message</button>
+          </div>
         </div>`;
       const canvas = document.getElementById("pin");
-      drawPin(canvas, slip.pin);
-      const started = Date.now();
-      const total = slip.seconds * 1000;
-      const tick = setInterval(() => {
-        const left = Math.max(0, Math.ceil((total - (Date.now() - started)) / 1000));
-        const status = document.getElementById("status");
-        if (status && left > 0) status.textContent = `This image disappears in ${left}s`;
-      }, 200);
-      setTimeout(() => {
+      const sheet = document.getElementById("sheet");
+      const status = document.getElementById("status");
+      drawPaper(canvas, false, "");
+      let opened = false;
+      let tick = 0;
+      let hideTimer = 0;
+      let goTimer = 0;
+      function burn() {
         clearInterval(tick);
-        canvas.classList.add("gone");
+        clearTimeout(hideTimer);
+        clearTimeout(goTimer);
+        document.removeEventListener("visibilitychange", onVis);
         const ctx = canvas.getContext("2d");
         ctx.clearRect(0, 0, canvas.width, canvas.height);
-        const status = document.getElementById("status");
-        if (status) status.textContent = "Moving you on…";
-      }, total);
-      setTimeout(() => location.replace(slip.redirect), total + 700);
+        location.replace(location.pathname + location.search + "#burnt");
+      }
+      let seen = !document.hidden;
+      function onVis() {
+        if (!opened) return;
+        if (!document.hidden) { seen = true; return; }
+        if (seen) burn();
+      }
+      document.addEventListener("visibilitychange", onVis);
+      function startTimer() {
+        const started = Date.now();
+        const total = slip.seconds * 1000;
+        status.hidden = false;
+        status.textContent = "This message disappears in " + slip.seconds + "s";
+        tick = setInterval(() => {
+          const left = Math.max(0, Math.ceil((total - (Date.now() - started)) / 1000));
+          if (left > 0) status.textContent = "This message disappears in " + left + "s";
+        }, 200);
+        hideTimer = setTimeout(() => {
+          clearInterval(tick);
+          canvas.style.opacity = "0";
+          status.textContent = "Moving you on…";
+        }, total);
+        goTimer = setTimeout(() => location.replace(slip.redirect), total + 700);
+      }
+      document.getElementById("reveal").addEventListener("click", async () => {
+        if (opened) return;
+        opened = true;
+        document.getElementById("reveal").remove();
+        canvas.setAttribute("aria-label", "Message on paper");
+        await drawPaper(canvas, true, slip.message);
+        sheet.classList.add("open");
+        document.getElementById("stage").classList.add("open");
+        if (matchMedia("(prefers-reduced-motion: reduce)").matches) startTimer();
+        else sheet.addEventListener("transitionend", (event) => {
+          if (event.propertyName === "transform") startTimer();
+        }, { once: true });
+      });
+    }
+
+    function renderLock(slip) {
+      if (burned(slip.salt)) {
+        location.replace(location.pathname + location.search + "#burnt");
+        return;
+      }
+      const GLYPHS = ["sun","moon","key","leaf","star","drop","bolt","heart","peak"];
+      function glyph(id) {
+        const paths = {
+          sun: '<circle cx="12" cy="12" r="3.5"/><path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.6 5.6l1.6 1.6M16.8 16.8l1.6 1.6M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6"/>',
+          moon: '<path d="M16 3.5A8 8 0 1 0 20.5 14 6.2 6.2 0 0 1 16 3.5z"/>',
+          key: '<circle cx="8" cy="14" r="3.2"/><path d="M11 14h9l-2 2.2M17 14v2.2"/>',
+          leaf: '<path d="M5 19C5 10 10 4 20 4 19 14 14 19 5 19zM5 19c4-4 7-7 10-10"/>',
+          star: '<path d="m12 3.5 2.2 4.6 5 .7-3.6 3.5.9 5.1L12 15.2 7.5 17.4l.9-5.1L4.8 8.8l5-.7L12 3.5z"/>',
+          drop: '<path d="M12 3s6 6.2 6 10.2A6 6 0 0 1 6 13.2C6 9.2 12 3 12 3z"/>',
+          bolt: '<path d="M13 2 5 13h6l-1 9 8-12h-6l1-8z"/>',
+          heart: '<path d="M12 19s-7-4.4-7-9a4 4 0 0 1 7-2 4 4 0 0 1 7 2c0 4.6-7 9-7 9z"/>',
+          peak: '<path d="m3 18 6.2-8 3.3 4.2L16 9l5 9H3z"/>',
+        };
+        return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${paths[id]}</svg>`;
+      }
+      let picked = [];
+      app.innerHTML = `
+        <section class="card">
+          <h2>Locked</h2>
+          ${slip.lock === "text" ? '<input class="url" id="pass" type="password" autocomplete="current-password" placeholder="Password" style="margin-top:1.25rem">' : ""}
+          ${slip.lock === "pin" ? '<div class="digits" style="margin-top:1.25rem">' + [0,1,2,3].map((i) => `<input inputmode="numeric" maxlength="4" aria-label="PIN digit ${i + 1}" data-pin="${i}">`).join("") + "</div>" : ""}
+          ${slip.lock === "image" ? '<div class="glyphs" id="grid"></div>' : ""}
+          <p class="error" id="error" hidden></p>
+          <button class="primary" id="try" type="button">Reveal message</button>
+        </section>`;
+      if (slip.lock === "image") {
+        const grid = document.getElementById("grid");
+        const paint = () => {
+          grid.innerHTML = GLYPHS.map((id) => {
+            const order = picked.indexOf(id);
+            return `<button type="button" data-glyph="${id}" aria-label="${id}" aria-pressed="${order >= 0}">${glyph(id)}${order >= 0 ? `<span>${order + 1}</span>` : ""}</button>`;
+          }).join("");
+          grid.querySelectorAll("[data-glyph]").forEach((button) => {
+            button.addEventListener("click", () => {
+              const id = button.dataset.glyph;
+              const at = picked.indexOf(id);
+              if (at >= 0) picked = picked.filter((item) => item !== id);
+              else if (picked.length < 3) picked = picked.concat(id);
+              paint();
+            });
+          });
+        };
+        paint();
+      }
+      document.getElementById("try").addEventListener("click", async () => {
+        const error = document.getElementById("error");
+        let secret = "";
+        if (slip.lock === "text") secret = document.getElementById("pass").value.trim();
+        if (slip.lock === "pin") secret = [...app.querySelectorAll("[data-pin]")].map((node) => node.value).join("");
+        if (slip.lock === "image") secret = picked.join(".");
+        if (!secret || (slip.lock === "pin" && !isPin(secret))) {
+          error.hidden = false;
+          error.textContent = slip.lock === "image" ? "Choose the images in order." : "Enter the lock.";
+          return;
+        }
+        const message = await unlockMessage(slip, secret);
+        if (message) {
+          show("view", { message, seconds: slip.seconds, redirect: slip.redirect, expiresAt: slip.expiresAt });
+          return;
+        }
+        if (noteFailure(slip.salt) >= 2) {
+          location.replace(location.pathname + location.search + "#burnt");
+          return;
+        }
+        error.hidden = false;
+        error.textContent = "That's not it. One try left.";
+      });
     }
 
     function renderBurnt() {
@@ -391,8 +711,12 @@
     async function sync() {
       const decoded = await decodeSlip(location.hash);
       if (decoded === "gone") show("gone");
-      else if (decoded === "expired") show("expired");
+      else if (decoded === "expired" || decoded === "burnt") show("expired");
       else if (decoded === "bad") show("bad");
+      else if (decoded && decoded.lock) {
+        if (burned(decoded.salt)) location.replace(location.pathname + location.search + "#burnt");
+        else show("lock", decoded);
+      }
       else if (decoded) show("view", decoded);
       else show("compose");
     }
