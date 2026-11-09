@@ -135,6 +135,12 @@
   </main>
   <script>
     const DURATIONS = [10, 30, 60, 120];
+    const LIFETIMES = [
+      { label: "5m", ms: 5 * 60 * 1000 },
+      { label: "15m", ms: 15 * 60 * 1000 },
+      { label: "1h", ms: 60 * 60 * 1000 },
+      { label: "1d", ms: 24 * 60 * 60 * 1000 },
+    ];
 
     function isPin(value) { return /^\d{4}$/.test(value); }
     function isHttp(value) {
@@ -144,7 +150,7 @@
       } catch { return false; }
     }
     function encodeSlip(slip) {
-      const json = JSON.stringify({ p: slip.pin, t: slip.seconds, r: slip.redirect });
+      const json = JSON.stringify({ p: slip.pin, t: slip.seconds, r: slip.redirect, e: slip.expiresAt });
       const bytes = new TextEncoder().encode(json);
       let binary = "";
       for (const byte of bytes) binary += String.fromCharCode(byte);
@@ -161,8 +167,9 @@
         const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
         const parsed = JSON.parse(new TextDecoder().decode(bytes));
         if (!isPin(parsed.p) || typeof parsed.t !== "number" || !isHttp(parsed.r)) return "bad";
+        if (typeof parsed.e === "number" && Date.now() > parsed.e) return "expired";
         const seconds = Math.min(600, Math.max(5, Math.round(parsed.t)));
-        return { pin: parsed.p, seconds, redirect: parsed.r };
+        return { pin: parsed.p, seconds, redirect: parsed.r, expiresAt: parsed.e };
       } catch { return "bad"; }
     }
 
@@ -195,6 +202,7 @@
       if (mode === "compose") renderCompose();
       else if (mode === "view") renderView(slip);
       else if (mode === "gone") renderMessage("That code is gone", "The image has already left this page. Nothing here can bring it back.", "Make another link");
+      else if (mode === "expired") renderMessage("This link has expired", "The time stamped in the link has passed, so the code stays hidden.", "Make another link");
       else renderMessage("This link is incomplete", "It does not contain a usable code. Ask for a new one — there is nothing to sign in to.", "Start over");
     }
 
@@ -209,6 +217,11 @@
           <div class="times">
             ${DURATIONS.map((n) => `<button type="button" data-sec="${n}" aria-pressed="${n === 30}">${n < 60 ? n + "s" : n / 60 + "m"}</button>`).join("")}
           </div>
+          <p class="label" style="margin-top:1.25rem">Link stops working after</p>
+          <div class="times">
+            ${LIFETIMES.map((option) => `<button type="button" data-life="${option.ms}" aria-pressed="${option.ms === 900000}">${option.label}</button>`).join("")}
+          </div>
+          <p class="note">That deadline is stamped into the link.</p>
           <label for="redirect" style="margin-top:1.25rem">Then open</label>
           <input class="url" id="redirect" type="url" inputmode="url" placeholder="Leave blank for an expired screen">
           <p class="error" id="error" hidden></p>
@@ -221,11 +234,12 @@
             <button class="copy" id="copy" type="button">Copy link</button>
             <a class="btn" id="open" href="#">Open it</a>
           </div>
-          <p class="note">The code is inside the link itself, so it works for anyone, on any device, without logging in. Do not post it somewhere public.</p>
+          <p class="note">After the stamped time, this page will not draw the code. The digits are still written in the link, so do not post it somewhere public.</p>
         </section>`;
       const inputs = [...app.querySelectorAll(".digits input")];
       const digits = ["", "", "", ""];
       let seconds = 30;
+      let lifeMs = 15 * 60 * 1000;
       inputs.forEach((input, index) => {
         input.addEventListener("input", () => {
           const cleaned = input.value.replace(/\D/g, "");
@@ -252,6 +266,13 @@
           document.getElementById("share").hidden = true;
         });
       });
+      app.querySelectorAll("[data-life]").forEach((button) => {
+        button.addEventListener("click", () => {
+          lifeMs = Number(button.dataset.life);
+          app.querySelectorAll("[data-life]").forEach((node) => node.setAttribute("aria-pressed", String(node === button)));
+          document.getElementById("share").hidden = true;
+        });
+      });
       document.getElementById("create").addEventListener("click", () => {
         const pin = digits.join("");
         const error = document.getElementById("error");
@@ -269,7 +290,7 @@
           return;
         }
         error.hidden = true;
-        const url = location.origin + location.pathname + location.search + "#" + encodeSlip({ pin, seconds, redirect: target });
+        const url = location.origin + location.pathname + location.search + "#" + encodeSlip({ pin, seconds, redirect: target, expiresAt: Date.now() + lifeMs });
         const share = document.getElementById("share");
         share.hidden = false;
         document.getElementById("link").textContent = url;
@@ -326,6 +347,7 @@
     function sync() {
       const decoded = decodeSlip(location.hash);
       if (decoded === "gone") show("gone");
+      else if (decoded === "expired") show("expired");
       else if (decoded === "bad") show("bad");
       else if (decoded) show("view", decoded);
       else show("compose");
