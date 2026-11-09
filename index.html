@@ -100,6 +100,8 @@
       transition: opacity 0.5s ease;
     }
     canvas.gone { opacity: 0; }
+    .burnt { width: min(100%, 28rem); height: auto; border-radius: 1rem; display: block; }
+    .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
     .text-btn {
       margin-top: 1.5rem; height: 2.75rem; padding: 0; border: 0; background: none;
       color: var(--brass); font-size: 0.875rem; font-weight: 500;
@@ -142,6 +144,9 @@
       { label: "1d", ms: 24 * 60 * 60 * 1000 },
     ];
 
+    const KEY_B64 = "G3Tec-bJo1KYkbi_1hJLuEz6NiPv13n5KZ9zutBxDs4";
+    let keyPromise = null;
+
     function isPin(value) { return /^\d{4}$/.test(value); }
     function isHttp(value) {
       try {
@@ -149,27 +154,54 @@
         return url.protocol === "http:" || url.protocol === "https:";
       } catch { return false; }
     }
-    function encodeSlip(slip) {
-      const json = JSON.stringify({ p: slip.pin, t: slip.seconds, r: slip.redirect, e: slip.expiresAt });
-      const bytes = new TextEncoder().encode(json);
+    function bytesToB64url(bytes) {
       let binary = "";
       for (const byte of bytes) binary += String.fromCharCode(byte);
-      return "s." + btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+      return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
     }
-    function decodeSlip(hash) {
+    function b64urlToBytes(value) {
+      const b64 = value.replace(/-/g, "+").replace(/_/g, "/");
+      const padded = b64 + "=".repeat((4 - (b64.length % 4)) % 4);
+      const binary = atob(padded);
+      return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+    }
+    function aesKey() {
+      if (!keyPromise) {
+        keyPromise = crypto.subtle.importKey("raw", b64urlToBytes(KEY_B64), "AES-GCM", false, ["encrypt", "decrypt"]);
+      }
+      return keyPromise;
+    }
+    function readSlip(parsed) {
+      if (!isPin(parsed.p) || typeof parsed.t !== "number" || !isHttp(parsed.r)) return "bad";
+      if (typeof parsed.e === "number" && Date.now() > parsed.e) return "expired";
+      const seconds = Math.min(600, Math.max(5, Math.round(parsed.t)));
+      return { pin: parsed.p, seconds, redirect: parsed.r, expiresAt: parsed.e };
+    }
+    async function encodeSlip(slip) {
+      const json = JSON.stringify({ p: slip.pin, t: slip.seconds, r: slip.redirect, e: slip.expiresAt });
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const cipher = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, await aesKey(), new TextEncoder().encode(json)));
+      const packed = new Uint8Array(iv.length + cipher.length);
+      packed.set(iv, 0);
+      packed.set(cipher, iv.length);
+      return "e." + bytesToB64url(packed);
+    }
+    async function decodeSlip(hash) {
       const raw = hash.startsWith("#") ? hash.slice(1) : hash;
       if (raw === "gone") return "gone";
-      if (!raw.startsWith("s.")) return raw ? "bad" : null;
       try {
-        const b64 = raw.slice(2).replace(/-/g, "+").replace(/_/g, "/");
-        const padded = b64 + "=".repeat((4 - (b64.length % 4)) % 4);
-        const binary = atob(padded);
-        const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
-        const parsed = JSON.parse(new TextDecoder().decode(bytes));
-        if (!isPin(parsed.p) || typeof parsed.t !== "number" || !isHttp(parsed.r)) return "bad";
-        if (typeof parsed.e === "number" && Date.now() > parsed.e) return "expired";
-        const seconds = Math.min(600, Math.max(5, Math.round(parsed.t)));
-        return { pin: parsed.p, seconds, redirect: parsed.r, expiresAt: parsed.e };
+        if (raw.startsWith("e.")) {
+          const packed = b64urlToBytes(raw.slice(2));
+          if (packed.length < 13) return "bad";
+          const plain = await crypto.subtle.decrypt(
+            { name: "AES-GCM", iv: packed.slice(0, 12) },
+            await aesKey(),
+            packed.slice(12),
+          );
+          return readSlip(JSON.parse(new TextDecoder().decode(plain)));
+        }
+        if (!raw.startsWith("s.")) return raw ? "bad" : null;
+        return readSlip(JSON.parse(new TextDecoder().decode(b64urlToBytes(raw.slice(2)))));
       } catch { return "bad"; }
     }
 
@@ -202,7 +234,7 @@
       if (mode === "compose") renderCompose();
       else if (mode === "view") renderView(slip);
       else if (mode === "gone") renderMessage("That code is gone", "The image has already left this page. Nothing here can bring it back.", "Make another link");
-      else if (mode === "expired") renderMessage("This link has expired", "The time stamped in the link has passed, so the code stays hidden.", "Make another link");
+      else if (mode === "expired") renderBurnt();
       else renderMessage("This link is incomplete", "It does not contain a usable code. Ask for a new one — there is nothing to sign in to.", "Start over");
     }
 
@@ -234,7 +266,7 @@
             <button class="copy" id="copy" type="button">Copy link</button>
             <a class="btn" id="open" href="#">Open it</a>
           </div>
-          <p class="note">After the stamped time, this page will not draw the code. The digits are still written in the link, so do not post it somewhere public.</p>
+          <p class="note">The code is encrypted in the link, so the address does not show the digits. After the stamped time, this page shows a burnt scrap and will not draw the code.</p>
         </section>`;
       const inputs = [...app.querySelectorAll(".digits input")];
       const digits = ["", "", "", ""];
@@ -273,7 +305,7 @@
           document.getElementById("share").hidden = true;
         });
       });
-      document.getElementById("create").addEventListener("click", () => {
+      document.getElementById("create").addEventListener("click", async () => {
         const pin = digits.join("");
         const error = document.getElementById("error");
         if (!isPin(pin)) {
@@ -290,7 +322,7 @@
           return;
         }
         error.hidden = true;
-        const url = location.origin + location.pathname + location.search + "#" + encodeSlip({ pin, seconds, redirect: target, expiresAt: Date.now() + lifeMs });
+        const url = location.origin + location.pathname + location.search + "#" + await encodeSlip({ pin, seconds, redirect: target, expiresAt: Date.now() + lifeMs });
         const share = document.getElementById("share");
         share.hidden = false;
         document.getElementById("link").textContent = url;
@@ -332,6 +364,18 @@
       setTimeout(() => location.replace(slip.redirect), total + 700);
     }
 
+    function renderBurnt() {
+      app.innerHTML = `
+        <div class="viewer">
+          <h2 class="sr">This link has expired</h2>
+          <img class="burnt" src="burnt-paper.jpg" alt="A burnt piece of paper" width="1200" height="800">
+          <button class="text-btn" id="reset" type="button">Make another link</button>
+        </div>`;
+      document.getElementById("reset").addEventListener("click", () => {
+        location.replace(location.pathname + location.search);
+      });
+    }
+
     function renderMessage(title, body, action) {
       app.innerHTML = `
         <section class="card">
@@ -344,8 +388,8 @@
       });
     }
 
-    function sync() {
-      const decoded = decodeSlip(location.hash);
+    async function sync() {
+      const decoded = await decodeSlip(location.hash);
       if (decoded === "gone") show("gone");
       else if (decoded === "expired") show("expired");
       else if (decoded === "bad") show("bad");
