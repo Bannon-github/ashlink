@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ashlink</title>
+  <meta name="description" content="A private link for a four-digit code. It is drawn as an image, disappears after a timer, then the page moves on. No sign-in.">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,560;9..144,640&family=Outfit:wght@400;500;600&display=swap">
+  <style>
+    :root {
+      --bg: #141311;
+      --surface: #1e1c19;
+      --surface-2: #2a261f;
+      --fg: #f4efe6;
+      --muted: #a89f90;
+      --line: #3d372e;
+      --brass: #e0b07a;
+      --brass-ink: #2a1c0c;
+      --ember: #e25b32;
+      --paper: #f6f0e4;
+      --ink: #1a1612;
+    }
+    * { box-sizing: border-box; }
+    html { -webkit-font-smoothing: antialiased; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: Outfit, ui-sans-serif, system-ui, sans-serif;
+    }
+    main {
+      width: min(32rem, calc(100% - 2.5rem));
+      margin: 0 auto;
+      padding: 2.5rem 0 4rem;
+    }
+    h1, h2 { font-family: Fraunces, Georgia, serif; font-weight: 560; text-wrap: balance; }
+    h1 { margin: 0; font-size: 1.5rem; line-height: 1; }
+    h2 { margin: 0; font-size: 1.875rem; }
+    p { text-wrap: pretty; }
+    button, a.btn { cursor: pointer; font: inherit; }
+    .brand { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 1rem; }
+    .mark {
+      width: 2.5rem; height: 2.5rem; border-radius: 999px;
+      background: var(--surface-2); color: var(--ember);
+      display: grid; place-items: center;
+    }
+    .kicker {
+      margin: 0 0 0.2rem;
+      font-size: 0.75rem; letter-spacing: 0.18em; text-transform: uppercase; color: var(--brass);
+    }
+    .lede { margin: 0 0 2rem; color: var(--muted); line-height: 1.55; }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 1.25rem;
+      padding: 1.25rem;
+    }
+    label, .label { display: block; margin: 0 0 0.75rem; font-size: 0.875rem; font-weight: 500; }
+    .digits { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.5rem; }
+    .digits input, .url {
+      width: 100%; height: 3.5rem; border-radius: 0.75rem;
+      border: 1px solid var(--line); background: var(--bg); color: var(--fg);
+      text-align: center; font-family: Fraunces, Georgia, serif; font-size: 1.875rem;
+    }
+    .url {
+      height: 3rem; text-align: left; padding: 0 0.75rem;
+      font-family: Outfit, sans-serif; font-size: 1rem;
+    }
+    input:focus { outline: none; border-color: var(--brass); }
+    input::placeholder { color: var(--muted); }
+    .times { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.5rem; margin-top: 0.75rem; }
+    .times button, .actions button, .actions a {
+      height: 2.75rem; border-radius: 0.75rem; border: 1px solid var(--line);
+      background: var(--bg); color: var(--fg); font-size: 0.875rem; font-weight: 500;
+    }
+    .times button[aria-pressed="true"] { background: var(--brass); color: var(--brass-ink); border-color: transparent; }
+    .primary, .copy {
+      width: 100%; margin-top: 1.25rem; height: 3rem; border: 0; border-radius: 0.75rem;
+      background: var(--ember); color: var(--paper); font-size: 1rem; font-weight: 500;
+    }
+    .copy { background: var(--brass); color: var(--brass-ink); margin: 0; }
+    .error { color: var(--ember); font-size: 0.875rem; margin: 0.75rem 0 0; }
+    .share { margin-top: 1.5rem; }
+    .link {
+      margin: 0 0 1rem; color: var(--muted); font-size: 0.875rem; line-height: 1.5;
+      overflow-wrap: anywhere;
+    }
+    .actions { display: flex; flex-direction: column; gap: 0.5rem; }
+    .actions a {
+      display: grid; place-items: center; text-decoration: none; background: transparent;
+    }
+    .note { margin: 0.75rem 0 0; color: var(--muted); font-size: 0.875rem; }
+    .viewer { display: flex; flex-direction: column; align-items: center; gap: 1.25rem; }
+    .viewer p { margin: 0; text-align: center; color: var(--muted); }
+    canvas {
+      width: min(100%, 24rem); height: auto; border-radius: 1rem;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+      transition: opacity 0.5s ease;
+    }
+    canvas.gone { opacity: 0; }
+    .text-btn {
+      margin-top: 1.5rem; height: 2.75rem; padding: 0; border: 0; background: none;
+      color: var(--brass); font-size: 0.875rem; font-weight: 500;
+    }
+    @media (min-width: 640px) {
+      main { padding-top: 4rem; }
+      .actions { flex-direction: row; }
+      .actions > * { flex: 1; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      canvas { transition: none; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div class="brand">
+        <span class="mark" aria-hidden="true">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.5-.5-2-1-3 2.5 1 4 3.5 4 6.5a4 4 0 1 1-8 0c0-1 .5-2 1-2.5"/>
+            <path d="M12 12c1-2 2.5-3.5 4-4.5-1 2.5-.5 4 .5 5.5a3.5 3.5 0 0 1-4.5 1"/>
+          </svg>
+        </span>
+        <div>
+          <p class="kicker">No account</p>
+          <h1>Ashlink</h1>
+        </div>
+      </div>
+      <p class="lede" id="lede">A private link for a four-digit code. It is drawn as an image, disappears after a timer, then the page moves on. Anyone with the link can open it — no sign-in.</p>
+    </header>
+    <div id="app"></div>
+  </main>
+  <script>
+    const DURATIONS = [10, 30, 60, 120];
+
+    function isPin(value) { return /^\d{4}$/.test(value); }
+    function isHttp(value) {
+      try {
+        const url = new URL(value);
+        return url.protocol === "http:" || url.protocol === "https:";
+      } catch { return false; }
+    }
+    function encodeSlip(slip) {
+      const json = JSON.stringify({ p: slip.pin, t: slip.seconds, r: slip.redirect });
+      const bytes = new TextEncoder().encode(json);
+      let binary = "";
+      for (const byte of bytes) binary += String.fromCharCode(byte);
+      return "s." + btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+    }
+    function decodeSlip(hash) {
+      const raw = hash.startsWith("#") ? hash.slice(1) : hash;
+      if (raw === "gone") return "gone";
+      if (!raw.startsWith("s.")) return raw ? "bad" : null;
+      try {
+        const b64 = raw.slice(2).replace(/-/g, "+").replace(/_/g, "/");
+        const padded = b64 + "=".repeat((4 - (b64.length % 4)) % 4);
+        const binary = atob(padded);
+        const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+        const parsed = JSON.parse(new TextDecoder().decode(bytes));
+        if (!isPin(parsed.p) || typeof parsed.t !== "number" || !isHttp(parsed.r)) return "bad";
+        const seconds = Math.min(600, Math.max(5, Math.round(parsed.t)));
+        return { pin: parsed.p, seconds, redirect: parsed.r };
+      } catch { return "bad"; }
+    }
+
+    const lede = document.getElementById("lede");
+    const app = document.getElementById("app");
+
+    function drawPin(canvas, pin) {
+      const ctx = canvas.getContext("2d");
+      const w = canvas.width, h = canvas.height;
+      ctx.clearRect(0, 0, w, h);
+      ctx.fillStyle = "#f6f0e4";
+      ctx.fillRect(0, 0, w, h);
+      ctx.strokeStyle = "#1a1612";
+      ctx.lineWidth = 8;
+      ctx.strokeRect(16, 16, w - 32, h - 32);
+      ctx.fillStyle = "#e25b32";
+      ctx.fillRect(16, 16, w - 32, 10);
+      ctx.fillStyle = "#1a1612";
+      ctx.font = "600 132px ui-monospace, SFMono-Regular, Menlo, monospace";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(pin.split("").join(" "), w / 2, h / 2 + 8);
+      ctx.font = "500 22px Outfit, sans-serif";
+      ctx.fillStyle = "#6d6458";
+      ctx.fillText("LOOK ONCE", w / 2, 58);
+    }
+
+    function show(mode, slip) {
+      lede.hidden = mode !== "compose";
+      if (mode === "compose") renderCompose();
+      else if (mode === "view") renderView(slip);
+      else if (mode === "gone") renderMessage("That code is gone", "The image has already left this page. Nothing here can bring it back.", "Make another link");
+      else renderMessage("This link is incomplete", "It does not contain a usable code. Ask for a new one — there is nothing to sign in to.", "Start over");
+    }
+
+    function renderCompose() {
+      app.innerHTML = `
+        <section class="card">
+          <p class="label">Four-digit code</p>
+          <div class="digits">
+            ${[0,1,2,3].map((i) => `<input inputmode="numeric" autocomplete="off" maxlength="4" aria-label="Digit ${i + 1}" data-i="${i}">`).join("")}
+          </div>
+          <p class="label" style="margin-top:1.25rem">Show it for</p>
+          <div class="times">
+            ${DURATIONS.map((n) => `<button type="button" data-sec="${n}" aria-pressed="${n === 30}">${n < 60 ? n + "s" : n / 60 + "m"}</button>`).join("")}
+          </div>
+          <label for="redirect" style="margin-top:1.25rem">Then open</label>
+          <input class="url" id="redirect" type="url" inputmode="url" placeholder="Leave blank for an expired screen">
+          <p class="error" id="error" hidden></p>
+          <button class="primary" id="create" type="button">Create link</button>
+        </section>
+        <section class="card share" id="share" hidden>
+          <p class="label">Share this link</p>
+          <p class="link" id="link"></p>
+          <div class="actions">
+            <button class="copy" id="copy" type="button">Copy link</button>
+            <a class="btn" id="open" href="#">Open it</a>
+          </div>
+          <p class="note">The code is inside the link itself, so it works for anyone, on any device, without logging in. Do not post it somewhere public.</p>
+        </section>`;
+      const inputs = [...app.querySelectorAll(".digits input")];
+      const digits = ["", "", "", ""];
+      let seconds = 30;
+      inputs.forEach((input, index) => {
+        input.addEventListener("input", () => {
+          const cleaned = input.value.replace(/\D/g, "");
+          if (cleaned.length > 1) {
+            cleaned.slice(0, 4).split("").forEach((char, offset) => {
+              if (index + offset < 4) digits[index + offset] = char;
+            });
+          } else {
+            digits[index] = cleaned.slice(-1);
+          }
+          inputs.forEach((node, i) => { node.value = digits[i]; });
+          const focusAt = Math.min(3, index + Math.max(cleaned.length, 1) - (cleaned ? 0 : 1));
+          if (cleaned) inputs[Math.min(3, index + cleaned.length)]?.focus();
+          document.getElementById("share").hidden = true;
+        });
+        input.addEventListener("keydown", (event) => {
+          if (event.key === "Backspace" && !digits[index] && index > 0) inputs[index - 1].focus();
+        });
+      });
+      app.querySelectorAll("[data-sec]").forEach((button) => {
+        button.addEventListener("click", () => {
+          seconds = Number(button.dataset.sec);
+          app.querySelectorAll("[data-sec]").forEach((node) => node.setAttribute("aria-pressed", String(node === button)));
+          document.getElementById("share").hidden = true;
+        });
+      });
+      document.getElementById("create").addEventListener("click", () => {
+        const pin = digits.join("");
+        const error = document.getElementById("error");
+        if (!isPin(pin)) {
+          error.hidden = false;
+          error.textContent = "Enter all four digits.";
+          return;
+        }
+        const typed = document.getElementById("redirect").value.trim();
+        const fallback = location.origin + location.pathname + location.search + "#gone";
+        const target = typed || fallback;
+        if (!isHttp(target)) {
+          error.hidden = false;
+          error.textContent = "The next page needs a full http or https address.";
+          return;
+        }
+        error.hidden = true;
+        const url = location.origin + location.pathname + location.search + "#" + encodeSlip({ pin, seconds, redirect: target });
+        const share = document.getElementById("share");
+        share.hidden = false;
+        document.getElementById("link").textContent = url;
+        document.getElementById("open").href = url;
+        document.getElementById("copy").textContent = "Copy link";
+        document.getElementById("copy").onclick = async () => {
+          try {
+            await navigator.clipboard.writeText(url);
+            document.getElementById("copy").textContent = "Copied";
+          } catch { /* leave the link visible to copy by hand */ }
+        };
+      });
+    }
+
+    function renderView(slip) {
+      app.innerHTML = `
+        <div class="viewer">
+          <p id="status">This image disappears in ${slip.seconds}s</p>
+          <canvas id="pin" width="640" height="280" role="img" aria-label="Temporary code"></canvas>
+          <p>Drawn as an image, so the digits are not selectable text.</p>
+        </div>`;
+      const canvas = document.getElementById("pin");
+      drawPin(canvas, slip.pin);
+      const started = Date.now();
+      const total = slip.seconds * 1000;
+      const tick = setInterval(() => {
+        const left = Math.max(0, Math.ceil((total - (Date.now() - started)) / 1000));
+        const status = document.getElementById("status");
+        if (status && left > 0) status.textContent = `This image disappears in ${left}s`;
+      }, 200);
+      setTimeout(() => {
+        clearInterval(tick);
+        canvas.classList.add("gone");
+        const ctx = canvas.getContext("2d");
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        const status = document.getElementById("status");
+        if (status) status.textContent = "Moving you on…";
+      }, total);
+      setTimeout(() => location.replace(slip.redirect), total + 700);
+    }
+
+    function renderMessage(title, body, action) {
+      app.innerHTML = `
+        <section class="card">
+          <h2>${title}</h2>
+          <p class="note">${body}</p>
+          <button class="text-btn" id="reset" type="button">${action}</button>
+        </section>`;
+      document.getElementById("reset").addEventListener("click", () => {
+        location.replace(location.pathname + location.search);
+      });
+    }
+
+    function sync() {
+      const decoded = decodeSlip(location.hash);
+      if (decoded === "gone") show("gone");
+      else if (decoded === "bad") show("bad");
+      else if (decoded) show("view", decoded);
+      else show("compose");
+    }
+    window.addEventListener("hashchange", sync);
+    sync();
+  </script>
+</body>
+</html>
